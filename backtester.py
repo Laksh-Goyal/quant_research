@@ -6,6 +6,9 @@ class BacktestEngine:
     def __init__(self, universe_builder: UniverseBuilder):
         self.ub = universe_builder
         self.prices = self.ub.prices.copy()
+        spy = pd.read_parquet("data/spy.parquet")
+        self.prices = pd.concat([self.prices, spy], ignore_index=True)
+
         self.results = None
         self.equity_curve = None
 
@@ -104,3 +107,107 @@ class BacktestEngine:
             'Max Drawdown': f"{max_dd:.2%}",
             'Count': len(self.results)
         }
+    
+    def compute_spy_benchmark(self, ticker="SPY"):
+        dates = self.ub.get_month_end_dates()
+        
+        spy = self.prices[self.prices["ticker"] == ticker].copy()
+        spy = spy.sort_values("date")
+        
+        returns = []
+        
+        for i in range(len(dates) - 1):
+            start = dates[i]
+            end = dates[i + 1]
+            
+            start_price = (
+                spy[spy["date"] <= start]
+                .sort_values("date")
+                .tail(1)["close"]
+            )
+            
+            end_price = (
+                spy[spy["date"] <= end]
+                .sort_values("date")
+                .tail(1)["close"]
+            )
+            
+            if start_price.empty or end_price.empty:
+                continue
+            
+            r = end_price.iloc[0] / start_price.iloc[0] - 1
+            
+            returns.append({
+                "date": end,
+                "spy_return": r
+            })
+        
+        spy_df = pd.DataFrame(returns)
+        spy_df["spy_nav"] = (1 + spy_df["spy_return"]).cumprod()
+        
+        return spy_df
+
+    def run_momentum_strategy(self, top_pct=0.1):
+
+        rebalance_dates = self.ub.get_month_end_dates()
+        results = []
+
+        for i in range(len(rebalance_dates) - 1):
+
+            start = rebalance_dates[i]
+            end = rebalance_dates[i + 1]
+
+            universe = self.ub.get_universe(start)
+            if not universe:
+                continue
+
+            # Get latest available momentum per ticker
+            df = self.prices[
+                (self.prices["ticker"].isin(universe)) &
+                (self.prices["date"] <= start)
+            ]
+
+            latest = (
+                df.sort_values("date")
+                .groupby("ticker")
+                .tail(1)
+            )
+
+            latest = latest.dropna(subset=["momentum"])
+
+            if latest.empty:
+                continue
+
+            # Rank by momentum
+            latest = latest.sort_values("momentum", ascending=False)
+
+            n_select = int(len(latest) * top_pct)
+            selected = latest.head(n_select)["ticker"]
+
+            # Compute next-period returns
+            df_period = self.prices[
+                (self.prices["ticker"].isin(selected)) &
+                (self.prices["date"] > start) &
+                (self.prices["date"] <= end)
+            ]
+
+            returns = (
+                df_period.groupby("ticker")["return"]
+                        .apply(lambda x: (1 + x).prod() - 1)
+            )
+
+            if len(returns) == 0:
+                continue
+
+            portfolio_return = returns.mean()
+
+            results.append({
+                "date": end,
+                "return": portfolio_return,
+                "n_stocks": len(returns)
+            })
+
+        df_res = pd.DataFrame(results)
+        df_res["nav"] = (1 + df_res["return"]).cumprod()
+
+        return df_res
