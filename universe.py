@@ -39,33 +39,27 @@ class UniverseBuilder:
     # Get Tradable Universe
     # ------------------------------------------------
     def get_universe(self, as_of_date):
+
         as_of_date = pd.to_datetime(as_of_date)
 
         if "adv" not in self.prices.columns:
             self.compute_adv()
 
-        # Only consider data up to rebalance date
         df = self.prices[self.prices["date"] <= as_of_date].copy()
 
-        # For each ticker, get last available row
         df = (
             df.sort_values("date")
             .groupby("ticker")
             .tail(1)
         )
 
-        # Drop rows where ADV not ready
-        df = df[df["adv"].notna()]
+        df = df[
+            (df["close"] > MIN_PRICE) &
+            (df["adv"].notna())
+        ]
 
-        # Price filter
-        df = df[df["close"] > MIN_PRICE]
+        return df["ticker"].tolist()
 
-        # Rank by liquidity
-        df = df.sort_values("adv", ascending=False)
-
-        universe = df.head(UNIVERSE_SIZE)["ticker"].tolist()
-
-        return universe
 
 
     # ------------------------------------------------
